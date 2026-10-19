@@ -5,6 +5,8 @@ import express from 'express';
 import cron from 'node-cron';
 
 import config from './config/application.js';
+import { createElenaMissionApp, validateElenaApiConfig } from './api/elenaMissionApi.js';
+import { executeElenaMission } from './services/elenaMissionService.js';
 import { initializeDatabase } from './utils/database.js';
 import { getGuildConfig } from './services/config/guildConfig.js';
 import { getServerCounters, saveServerCounters, updateCounter } from './services/serverstatsService.js';
@@ -111,6 +113,7 @@ class TitanBot extends Client {
 
   startWebServer() {
     const app = express();
+    const elenaApiEnabled = validateElenaApiConfig(this.config.elenaApi);
     const configuredPort = Number(this.config.api?.port || process.env.PORT || 3000);
     const maxPortRetryAttempts = Number(process.env.PORT_RETRY_ATTEMPTS || 5);
     const host = process.env.WEB_HOST || '0.0.0.0';
@@ -245,6 +248,28 @@ class TitanBot extends Client {
     };
 
     startServer(configuredPort, 0);
+
+    if (elenaApiEnabled) {
+      const elenaApp = createElenaMissionApp({
+        token: this.config.elenaApi.token,
+        workspaceId: this.config.elenaApi.workspaceId,
+        allowedGuildIds: this.config.elenaApi.allowedGuildIds,
+        executeMission: (mission, allowedGuildIds) => executeElenaMission(
+          this,
+          mission,
+          this.config.elenaApi.workspaceId,
+          allowedGuildIds,
+        ),
+      });
+      const elenaServer = elenaApp.listen(this.config.elenaApi.port, this.config.elenaApi.host, () => {
+        this.elenaApiServer = elenaServer;
+        startupLog(`ELENA private mission API listening on ${this.config.elenaApi.host}:${this.config.elenaApi.port}`);
+      });
+      elenaServer.on('error', (error) => {
+        logger.error('ELENA private mission API failed to bind:', error);
+        process.exit(1);
+      });
+    }
   }
 
   setupCronJobs() {
@@ -350,6 +375,12 @@ class TitanBot extends Client {
         logger.info('Closing web server...');
         await new Promise((resolve) => this.webServer.close(resolve));
         logger.info('✅ Web server closed');
+      }
+
+      if (this.elenaApiServer) {
+        logger.info('Closing ELENA private mission API...');
+        await new Promise((resolve) => this.elenaApiServer.close(resolve));
+        logger.info('ELENA private mission API closed');
       }
 
       // Close database connection
