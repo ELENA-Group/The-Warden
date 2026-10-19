@@ -127,6 +127,59 @@ TitanBot is fully containerized for easy deployment.
 
 This starts the bot and PostgreSQL. The compose file sets `POSTGRES_SSL=false` and `AUTO_MIGRATE=true` for the bundled database. Music uses public Lavalink v4 nodes from `lavalink/nodes.json` by default.
 
+### Private ELENA mission API
+
+Warden can optionally expose one private HTTP endpoint for ELENA-approved moderation missions. It is disabled unless `ELENA_API_PORT` is set; the existing `/`, `/health`, and `/ready` routes remain on the normal web listener and are unchanged. This API is not a Discord bot or control plane: it uses Warden's existing Discord client and moderation services.
+
+Configure:
+
+```env
+ELENA_API_HOST=127.0.0.1
+ELENA_API_PORT=3100
+ELENA_API_TOKEN=<at least 32 random bytes>
+ELENA_API_WORKSPACE_ID=<stable ELENA workspace identifier>
+ELENA_API_ALLOWED_GUILDS=<comma-separated Discord guild IDs>
+```
+
+Keep the default loopback bind when both services share a host. For separate containers/hosts, bind only to a private interface and restrict access with a private network/firewall; do not publish the integration port publicly. Use a TLS-protected private connection (or private ingress that provides TLS). The token is a dedicated ELENA-to-Warden bearer credential and must not be a Discord token. If the port is enabled, missing/weak credentials, an invalid workspace ID, or an empty/invalid guild allowlist stop startup. Do not run multiple Warden replicas behind a load balancer: approval replay protection is intentionally in-memory per process.
+
+**Request:** `POST /v1/missions`, `Authorization: Bearer <ELENA_API_TOKEN>`, `Content-Type: application/json`; maximum JSON body is 16 KiB.
+
+```json
+{
+  "version": 1,
+  "requestId": "42345678-1234-4234-8234-123456789012",
+  "approval": {
+    "id": "52345678-1234-4234-8234-123456789012",
+    "authority": "ELENA",
+    "approvedAt": "2026-10-19T16:30:00.000Z",
+    "workspaceId": "elena-production",
+    "guildId": "12345678901234567",
+    "actorId": "22345678901234567",
+    "action": "moderation.timeout",
+    "targetId": "32345678901234567",
+    "reason": "Approved by ELENA",
+    "rationale": "Approved moderation mission",
+    "durationMs": 60000
+  },
+  "workspaceId": "elena-production",
+  "guildId": "12345678901234567",
+  "actorId": "22345678901234567",
+  "action": "moderation.timeout",
+  "targetId": "32345678901234567",
+  "reason": "Approved by ELENA",
+  "durationMs": 60000
+}
+```
+
+`workspaceId` must equal the one stable workspace ID configured for this Warden instance. `approval` is required and must bind the same workspace, guild, actor, action, target, reason, and (for timeout) duration as the mission; `authority` must be `ELENA`, `approvedAt` must be within five minutes (with 30 seconds clock skew), and `rationale` is 1-512 characters. Approval ID and request ID must be UUIDs and cannot be reused for ten minutes. The token authenticates ELENA as the caller; the approval fields carry its explicit approval context and are not a substitute for protecting that token. `guildId`, `actorId`, and `targetId` are 17-20 digit Discord IDs. Allowed actions are `moderation.ban`, `moderation.kick`, `moderation.timeout`, and `moderation.untimeout`; `reason` is 1-512 characters and `durationMs` is required only for timeout (1 ms through 28 days). Unknown fields are rejected.
+
+**Success (200):** `{"version":1,"requestId":"<same UUID>","status":"completed","result":<operation result>}`. Ban/kick return `{caseId,user,reason}`, timeout returns `{caseId,user,duration,reason}` (`duration` in whole minutes), and untimeout returns `{user}`.
+
+**Failure:** JSON shape `{"version":1,"requestId":"<UUID, when parsed>","error":{"code":"<stable code>","message":"<safe message>"}}`. Statuses: `400` invalid request/approval/action, `401` invalid bearer credential, `403` workspace/guild not allowlisted or actor/moderation permission denied, `404` guild/target not found, `409` replayed request/approval, `413` body over 16 KiB, `503` Warden not ready or approval capacity full, and `500` unexpected failure. A mission attempt consumes its approval before execution; after an ambiguous failure, ELENA should obtain a new approval rather than retrying that ID.
+
+Warden independently verifies the guild allowlist, resolves the approved actor as an actual member, and checks the actor's relevant Discord permission (or guild owner/admin/configured moderator role). Existing Warden moderation services still enforce target and bot role hierarchy and log moderation cases. Warden does not accept a caller-selected execution identity, arbitrary command names, or actions outside this allowlist.
+
 ### Music
 
 Music uses [Lavalink v4](https://github.com/lavalink-devs/Lavalink) via [Riffy](https://github.com/riffy-rb/riffy), similar to [Musicify](https://github.com/codebymitch/Musicify).

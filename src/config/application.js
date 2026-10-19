@@ -70,6 +70,17 @@ const appConfig = {
     },
   },
 
+  elenaApi: {
+    host: process.env.ELENA_API_HOST || "127.0.0.1",
+    port: process.env.ELENA_API_PORT ? Number(process.env.ELENA_API_PORT) : null,
+    token: process.env.ELENA_API_TOKEN || "",
+    workspaceId: process.env.ELENA_API_WORKSPACE_ID || "",
+    allowedGuildIds: (process.env.ELENA_API_ALLOWED_GUILDS || "")
+      .split(",")
+      .map((guildId) => guildId.trim())
+      .filter(Boolean),
+  },
+
   shop,
 
   features: {
